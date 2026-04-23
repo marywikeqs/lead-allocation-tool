@@ -301,7 +301,6 @@
 
             <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
               <Chip label="Avg Customer Wait" value={`${r.avgWait}h`} warn={r.avgWait > 3} good={r.avgWait <= 1.5} />
-              <Chip label="Call-In Wait" value={`${r.callInWait}h`} warn={r.callInWait > 2} good={r.callInWait <= 1} />
               <Chip label="SLA Breaches (>4h)" value={`${r.slaBreachRate}%`} warn={r.slaBreachRate > 20} good={r.slaBreachRate === 0} />
               <Chip label="Max AE Drift from Target" value={`${r.maxDrift > 0 ? "+" : ""}${r.maxDrift}pp`} warn={r.maxDrift > 15} good={Math.abs(r.maxDrift) <= 5} />
             </div>
@@ -356,7 +355,6 @@
                   <tbody>
                     {[
                       { label: "Avg Customer Wait", vals: results.map(r => `${r.avgWait}h`), warnIdx: results.map(r => r.avgWait).indexOf(Math.max(...results.map(r => r.avgWait))) },
-                      { label: "Call-In Wait (avg)", vals: results.map(r => `${r.callInWait}h`), warnIdx: results.map(r => r.callInWait).indexOf(Math.max(...results.map(r => r.callInWait))) },
                       { label: "SLA Breach Rate", vals: results.map(r => `${r.slaBreachRate}%`), warnIdx: results.map(r => r.slaBreachRate).indexOf(Math.max(...results.map(r => r.slaBreachRate))) },
                       { label: "Max AE Drift from Target", vals: results.map(r => `${r.maxDrift > 0 ? "+" : ""}${r.maxDrift}pp`), warnIdx: results.map(r => r.maxDrift).indexOf(Math.max(...results.map(r => r.maxDrift))) },
                       ...pod.aes.map(ae => ({
