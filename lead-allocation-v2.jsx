@@ -83,13 +83,11 @@ function generateLeads(pod, n, availRoutingRate, seed = 42) {
 // ─── Scenario Engines ─────────────────────────────────────────────────────────
 
 function runScenario(scenario, leads, aes, calendar) {
-  // Clone AE state — track target-weighted "points" (higher target = more allocation)
   const totalTargets = aes.reduce((s, ae) => s + ae.target, 0);
   const state = aes.map(ae => ({
     ...ae,
     assigned: 0,
-    points: ae.target / totalTargets, // normalised weight
-    pendingLeads: [],
+    cw: 0,
   }));
 
   const assignments = leads.map(lead => {
@@ -101,15 +99,13 @@ function runScenario(scenario, leads, aes, calendar) {
       (calendar[ae.id] || []).find(s => s.day > fromDay || (s.day === fromDay && s.hour >= fromHour));
 
     if (scenario === 1) {
-      // ── S1: WEIGHTED ROTATION ─────────────────────────────────────────
-      // Sort by highest allocation target weight (who's up next)
-      // Call-ins get routed same way — rotation is king
-      const sorted = [...state].sort((a, b) => b.points - a.points);
+      for (const ae of state) ae.cw += ae.target / totalTargets;
+      const sorted = [...state].sort((a, b) => b.cw - a.cw);
       chosen = sorted[0];
       meetSlot = soonestSlot(chosen, lead.day, lead.custPrefHour)
         ?? soonestSlot(chosen, lead.day, lead.arrivalHour)
         ?? { day: lead.day + 1, hour: 9 };
-      chosen.points -= (chosen.target / totalTargets); // decay
+      chosen.cw -= 1;
       chosen.assigned++;
 
     } else if (scenario === 2) {
@@ -153,12 +149,13 @@ function runScenario(scenario, leads, aes, calendar) {
           }
         }
       } else {
-        const sorted = [...state].sort((a, b) => b.points - a.points);
+        for (const ae of state) ae.cw += ae.target / totalTargets;
+        const sorted = [...state].sort((a, b) => b.cw - a.cw);
         chosen = sorted[0];
         meetSlot = soonestSlot(chosen, lead.day, lead.custPrefHour)
           ?? soonestSlot(chosen, lead.day, lead.arrivalHour)
           ?? { day: lead.day + 1, hour: 9 };
-        chosen.points -= (chosen.target / totalTargets);
+        chosen.cw -= 1;
       }
       if (chosen) chosen.assigned++;
     }
@@ -366,7 +363,6 @@ export default function App() {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 12, fontSize: 12 }}>
-                  <div><span style={{ color: C.muted }}>Avg wait </span><span style={{ color: ae.avgWait > 4 ? C.warn : C.text, fontWeight: 600 }}>{ae.avgWait}h</span></div>
                   <div><span style={{ color: C.muted }}>SLA miss </span><span style={{ color: ae.slaBreaches > 0 ? C.warn : C.ok, fontWeight: 600 }}>{ae.slaBreaches}</span></div>
                 </div>
               </div>
