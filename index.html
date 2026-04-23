@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lead Allocation 4.0 · Scenario Modeller</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    // ─── Real data from Lead_Allocation_4_0 ──────────────────────────────────────
+
+    const PODS = {
+      "Pod Red": {
+        color: "#f75e5e",
+        aes: [
+          { id: "brian",   name: "Brian Sullivan",    target: 0.19,  email: "brian.sullivan@quiltsoftware.com" },
+          { id: "cameron", name: "Cameron Kornegay",  target: 0.405, email: "ckornegay@posnation.com" },
+          { id: "chase",   name: "Chase Parks",       target: 0.405, email: "chase@posnation.com" },
+        ],
+        types: ["New (SBU)", "Migration (SBU)"],
+        industries: ["Grocery", "Farm", "Other (SBU)"],
+      },
+      "Pod Green": {
+        color: "#5ef7a2",
+        aes: [
+          { id: "ryan",    name: "Ryan Christensen",  target: 0.28, email: "ryanchristensen@posretailsoftware.com" },
+          { id: "hunter",  name: "Hunter Willis",     target: 0.36, email: "hunterwillis@posretailsoftware.com" },
+          { id: "robert",  name: "Robert Paxton",     target: 0.36, email: "rpaxton@quiltsoftware.com" },
+        ],
+        types: ["New (XBU)", "Migration (XBU)"],
+        industries: ["Jewelry", "Pet", "Thrift"],
+      },
+      "Pod Blue": {
+        color: "#4f8ef7",
+        aes: [
+          { id: "will",    name: "Will Thomas",       target: 0.28,  email: "wthomas@posnation.com" },
+          { id: "andrew",  name: "Andrew Ray",        target: 0.36,  email: "aray@posnation.com" },
+          { id: "michael", name: "Michael Voveris",   target: 0.36,  email: "michael.voveris@quiltsoftware.com" },
+        ],
+        types: ["New (SBU Non-SA)", "Migration (SBU Non-SA)"],
+        industries: ["Liquor", "Tobacco", "Convenience"],
+      },
+      "Pod Black": {
+        color: "#b0b8d8",
+        aes: [
+          { id: "carter",  name: "Carter Memmott",    target: 0.5,  email: "carter.memmott@quiltsoftware.com" },
+          { id: "diego",   name: "Diego Gonzalez",    target: 0.5,  email: "diego.gonzalez@quiltsoftware.com" },
+        ],
+        types: ["New/Migration (XBU)", "Change of Ownership"],
+        industries: ["Music", "Dive", "Quilt/SewVac", "Boutique", "Framing"],
+      },
+    };
+
+    function generateCalendar(aes, seed = 7) {
+      let s = seed;
+      const rand = () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+      return aes.reduce((acc, ae) => {
+        const slots = [];
+        for (let day = 0; day < 5; day++) {
+          for (let slot = 0; slot < 44; slot++) {
+            const hour = 6 + slot * 0.25;
+            const busyChance = (hour >= 9 && hour <= 11.75) || (hour >= 13 && hour <= 14.75) ? 0.55 : 0.3;
+            if (rand() > busyChance) {
+              slots.push({ day, slot, hour: 6 + slot * 0.25 });
+            }
+          }
+        }
+        acc[ae.id] = slots;
+        return acc;
+      }, {});
+    }
+
+    function generateLeads(pod, n, seed = 42) {
+      let s = seed;
+      const rand = () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+      return Array.from({ length: n }, (_, i) => {
+        const day = Math.floor(rand() * 5);
+        const arrivalHour = 8 + rand() * 8;
+        const custPrefHour = arrivalHour + rand() * 4 + 0.5;
+        const isCallIn = rand() < 0.3;
+        return {
+          id: i + 1,
+          day,
+          arrivalHour,
+          custPrefHour: Math.min(custPrefHour, 17),
+          isCallIn,
+          industry: pod.industries[Math.floor(rand() * pod.industries.length)],
+          type: pod.types[Math.floor(rand() * pod.types.length)],
+        };
+      });
+    }
+
+    function runScenario(scenario, leads, aes, calendar) {
+      const totalTargets = aes.reduce((s, ae) => s + ae.target, 0);
+      const state = aes.map(ae => ({
+        ...ae,
+        assigned: 0,
+        points: ae.target / totalTargets,
+        pendingLeads: [],
+      }));
+
+      const assignments = leads.map(lead => {
+        let chosen = null;
+        let meetSlot = null;
+
+        const soonestSlot = (ae, fromDay, fromHour) =>
+          (calendar[ae.id] || []).find(s => s.day > fromDay || (s.day === fromDay && s.hour >= fromHour));
+
+        if (scenario === 1) {
+          const sorted = [...state].sort((a, b) => b.points - a.points);
+          chosen = sorted[0];
+          meetSlot = soonestSlot(chosen, lead.day, lead.custPrefHour)
+            ?? soonestSlot(chosen, lead.day, lead.arrivalHour)
+            ?? { day: lead.day + 1, hour: 9 };
+          chosen.points -= (chosen.target / totalTargets);
+          chosen.assigned++;
+
+        } else if (scenario === 2) {
+          let best = Infinity;
+          for (const ae of state) {
+            const s = soonestSlot(ae, lead.day, lead.custPrefHour);
+            const dayHour = s ? s.day * 24 + s.hour : Infinity;
+            if (dayHour < best) { best = dayHour; chosen = ae; meetSlot = s; }
+          }
+          if (!chosen) {
+            for (const ae of state) {
+              const s = soonestSlot(ae, lead.day, lead.arrivalHour);
+              const dayHour = s ? s.day * 24 + s.hour : Infinity;
+              if (dayHour < best) { best = dayHour; chosen = ae; meetSlot = s; }
+            }
+          }
+          if (chosen) chosen.assigned++;
+
+        } else if (scenario === 3) {
+          const targetShare = aes.reduce((acc, ae) => { acc[ae.id] = ae.target / totalTargets; return acc; }, {});
+          const totalAssigned = state.reduce((s, ae) => s + ae.assigned, 0) || 1;
+
+          if (lead.isCallIn) {
+            let best = Infinity;
+            for (const ae of state) {
+              const s = soonestSlot(ae, lead.day, lead.custPrefHour);
+              const dayHour = s ? s.day * 24 + s.hour : Infinity;
+              const currentShare = ae.assigned / totalAssigned;
+              const overloaded = currentShare > targetShare[ae.id] * 1.4;
+              if (!overloaded && dayHour < best) { best = dayHour; chosen = ae; meetSlot = s; }
+            }
+            if (!chosen) {
+              for (const ae of state) {
+                const s = soonestSlot(ae, lead.day, lead.custPrefHour);
+                const dayHour = s ? s.day * 24 + s.hour : Infinity;
+                if (dayHour < best) { best = dayHour; chosen = ae; meetSlot = s; }
+              }
+            }
+          } else {
+            const sorted = [...state].sort((a, b) => b.points - a.points);
+            chosen = sorted[0];
+            meetSlot = soonestSlot(chosen, lead.day, lead.custPrefHour)
+              ?? soonestSlot(chosen, lead.day, lead.arrivalHour)
+              ?? { day: lead.day + 1, hour: 9 };
+            chosen.points -= (chosen.target / totalTargets);
+          }
+          if (chosen) chosen.assigned++;
+        }
+
+        if (!chosen || !meetSlot) return null;
+
+        const waitHours = Math.max(0, (meetSlot.day * 24 + meetSlot.hour) - (lead.day * 24 + lead.custPrefHour));
+        const overSla = waitHours > 4;
+
+        return {
+          leadId: lead.id,
+          aeId: chosen.id,
+          aeName: chosen.name,
+          meetDay: meetSlot.day,
+          meetHour: meetSlot.hour,
+          waitHours: +waitHours.toFixed(2),
+          overSla,
+          isCallIn: lead.isCallIn,
+          industry: lead.industry,
+        };
+      }).filter(Boolean);
+
+      const totalTargets2 = aes.reduce((s, ae) => s + ae.target, 0);
+      const aeSummary = aes.map(ae => {
+        const mine = assignments.filter(a => a.aeId === ae.id);
+        const expectedShare = ae.target / totalTargets2;
+        const actualShare = assignments.length ? mine.length / assignments.length : 0;
+        const drift = +((actualShare - expectedShare) * 100).toFixed(1);
+        const avgWait = mine.length ? +(mine.reduce((s, a) => s + a.waitHours, 0) / mine.length).toFixed(1) : 0;
+        const slaBreaches = mine.filter(a => a.overSla).length;
+        return { ...ae, assigned: mine.length, expectedShare, actualShare, drift, avgWait, slaBreaches };
+      });
+
+      const avgWait = assignments.length ? +(assignments.reduce((s, a) => s + a.waitHours, 0) / assignments.length).toFixed(1) : 0;
+      const slaBreachRate = assignments.length ? +((assignments.filter(a => a.overSla).length / assignments.length) * 100).toFixed(1) : 0;
+      const maxDrift = Math.max(...aeSummary.map(a => a.drift));
+      const callInWait = assignments.filter(a => a.isCallIn).length
+        ? +(assignments.filter(a => a.isCallIn).reduce((s, a) => s + a.waitHours, 0) / assignments.filter(a => a.isCallIn).length).toFixed(1)
+        : 0;
+
+      return { assignments, aeSummary, avgWait, slaBreachRate, maxDrift, callInWait };
+    }
+
+    const C = {
+      bg: "#0b0d13", surface: "#10131c", card: "#161a27", border: "#222740",
+      text: "#dce3f5", muted: "#5a6285", warn: "#f75e5e", ok: "#5ef7a2",
+    };
+
+    const SM = [
+      { label: "S1", title: "Rotation First",  sub: "Weighted targets drive all assignments — call-ins too", color: "#4f8ef7", icon: "⟳" },
+      { label: "S2", title: "Customer First",  sub: "Soonest open slot wins every time, no rotation",        color: "#f7a24f", icon: "⚡" },
+      { label: "S3", title: "Hybrid (Actual)", sub: "Web leads → rotation · Call-ins → soonest slot + overload guard", color: "#5ef7a2", icon: "⚖" },
+    ];
+
+    function App() {
+      const [activePod, setActivePod] = useState("Pod Red");
+      const [leadCount, setLeadCount] = useState(30);
+      const [activeScenario, setActiveScenario] = useState(2);
+
+      const pod = PODS[activePod];
+
+      const { leads, calendar, results } = useMemo(() => {
+        const leads = generateLeads(pod, leadCount, activePod.length * 13);
+        const calendar = generateCalendar(pod.aes, activePod.length * 7);
+        const results = [1, 2, 3].map(s => runScenario(s, leads, pod.aes, calendar));
+        return { leads, calendar, results };
+      }, [activePod, leadCount]);
+
+      const r = results[activeScenario];
+      const sm = SM[activeScenario];
+
+      const Chip = ({ label, value, warn, good, small }) => (
+        <div style={{ background: C.card, border: `1px solid ${warn ? C.warn : good ? C.ok : C.border}`, borderRadius: 8, padding: small ? "10px 14px" : "14px 18px", flex: 1, minWidth: 110 }}>
+          <div style={{ color: warn ? C.warn : good ? C.ok : C.muted, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>{label}</div>
+          <div style={{ color: warn ? C.warn : good ? C.ok : C.text, fontSize: small ? 20 : 26, fontWeight: 800 }}>{value}</div>
+        </div>
+      );
+
+      return (
+        <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "'DM Sans', sans-serif", padding: "28px 20px" }}>
+          <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap'); *{box-sizing:border-box}`}</style>
+
+          <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ color: C.muted, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 6, fontFamily: "'DM Mono', monospace" }}>
+                Lead Allocation 4.0 · Scenario Modeller
+              </div>
+              <h1 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 4px", letterSpacing: "-0.02em" }}>Allocation Risk Explorer</h1>
+              <p style={{ color: C.muted, fontSize: 14, margin: 0 }}>
+                Based on your actual pod/target structure · {leads.filter(l => l.isCallIn).length} of {leadCount} leads are call-ins (30%)
+              </p>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+              {Object.entries(PODS).map(([name, p]) => (
+                <button key={name} onClick={() => setActivePod(name)}
+                  style={{ padding: "8px 16px", borderRadius: 8, border: `1.5px solid ${activePod === name ? p.color : C.border}`,
+                    background: activePod === name ? `${p.color}18` : C.card, color: activePod === name ? p.color : C.muted,
+                    cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                  {name}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 18px", marginBottom: 20, display: "flex", gap: 24, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ color: C.muted, fontSize: 12, fontFamily: "'DM Mono', monospace" }}>TARGET WEIGHTS</span>
+              {pod.aes.map(ae => (
+                <div key={ae.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: pod.color }} />
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{ae.name.split(" ")[0]}</span>
+                  <span style={{ color: pod.color, fontSize: 13, fontFamily: "'DM Mono', monospace" }}>{(ae.target * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ color: C.muted, fontSize: 12 }}>LEADS</span>
+                <input type="range" min={10} max={80} step={5} value={leadCount}
+                  onChange={e => setLeadCount(+e.target.value)}
+                  style={{ width: 100, accentColor: pod.color }} />
+                <span style={{ color: pod.color, fontWeight: 800, fontSize: 18, minWidth: 28, fontFamily: "'DM Mono', monospace" }}>{leadCount}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
+              {SM.map((s, i) => (
+                <button key={i} onClick={() => setActiveScenario(i)}
+                  style={{ flex: 1, padding: "14px 14px", border: `1.5px solid ${activeScenario === i ? s.color : C.border}`,
+                    background: activeScenario === i ? `${s.color}12` : C.card, borderRadius: 10, cursor: "pointer", textAlign: "left" }}>
+                  <div style={{ color: activeScenario === i ? s.color : C.muted, fontSize: 16, marginBottom: 2 }}>{s.icon} <span style={{ fontWeight: 800, fontSize: 14 }}>{s.title}</span></div>
+                  <div style={{ color: C.muted, fontSize: 11, lineHeight: 1.4 }}>{s.sub}</div>
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+              <Chip label="Avg Customer Wait" value={`${r.avgWait}h`} warn={r.avgWait > 3} good={r.avgWait <= 1.5} />
+              <Chip label="Call-In Wait" value={`${r.callInWait}h`} warn={r.callInWait > 2} good={r.callInWait <= 1} />
+              <Chip label="SLA Breaches (>4h)" value={`${r.slaBreachRate}%`} warn={r.slaBreachRate > 20} good={r.slaBreachRate === 0} />
+              <Chip label="Max AE Drift from Target" value={`${r.maxDrift > 0 ? "+" : ""}${r.maxDrift}pp`} warn={r.maxDrift > 15} good={Math.abs(r.maxDrift) <= 5} />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 24 }}>
+              {r.aeSummary.map(ae => {
+                const overTarget = ae.drift > 10;
+                const underTarget = ae.drift < -10;
+                const statusColor = overTarget ? C.warn : underTarget ? "#f7a24f" : C.ok;
+                return (
+                  <div key={ae.id} style={{ background: C.card, border: `1px solid ${overTarget ? C.warn : C.border}`, borderRadius: 10, padding: 16 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>{ae.name}</div>
+                    <div style={{ color: C.muted, fontSize: 11, marginBottom: 12, fontFamily: "'DM Mono', monospace" }}>
+                      Target: {(ae.target * 100).toFixed(0)}% · Actual: {(ae.actualShare * 100).toFixed(0)}%
+                    </div>
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+                        <span style={{ color: C.muted }}>Assigned: {ae.assigned}</span>
+                        <span style={{ color: statusColor, fontWeight: 700 }}>
+                          {ae.drift > 0 ? "+" : ""}{ae.drift}pp {overTarget ? "⚠ over" : underTarget ? "under" : "✓"}
+                        </span>
+                      </div>
+                      <div style={{ background: C.border, borderRadius: 4, height: 6 }}>
+                        <div style={{ width: `${Math.min(100, (ae.actualShare / (ae.target + 0.001)) * 100)}%`, height: "100%", background: statusColor, borderRadius: 4, transition: "width 0.4s" }} />
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 12, fontSize: 12 }}>
+                      <div><span style={{ color: C.muted }}>Avg wait </span><span style={{ color: ae.avgWait > 4 ? C.warn : C.text, fontWeight: 600 }}>{ae.avgWait}h</span></div>
+                      <div><span style={{ color: C.muted }}>SLA miss </span><span style={{ color: ae.slaBreaches > 0 ? C.warn : C.ok, fontWeight: 600 }}>{ae.slaBreaches}</span></div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, marginBottom: 20, overflow: "hidden" }}>
+              <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14 }}>
+                Cross-Scenario Comparison <span style={{ color: C.muted, fontWeight: 400, fontSize: 13 }}>— same {leadCount} leads, same AE calendars</span>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: "10px 16px", textAlign: "left", color: C.muted, fontSize: 11, fontFamily: "'DM Mono', monospace", borderBottom: `1px solid ${C.border}` }}>Metric</th>
+                      {SM.map((s, i) => (
+                        <th key={i} style={{ padding: "10px 16px", textAlign: "center", color: s.color, fontSize: 11, fontFamily: "'DM Mono', monospace", borderBottom: `1px solid ${C.border}` }}>
+                          {s.icon} {s.title}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { label: "Avg Customer Wait", vals: results.map(r => `${r.avgWait}h`), warnIdx: results.map(r => r.avgWait).indexOf(Math.max(...results.map(r => r.avgWait))) },
+                      { label: "Call-In Wait (avg)", vals: results.map(r => `${r.callInWait}h`), warnIdx: results.map(r => r.callInWait).indexOf(Math.max(...results.map(r => r.callInWait))) },
+                      { label: "SLA Breach Rate", vals: results.map(r => `${r.slaBreachRate}%`), warnIdx: results.map(r => r.slaBreachRate).indexOf(Math.max(...results.map(r => r.slaBreachRate))) },
+                      { label: "Max AE Drift from Target", vals: results.map(r => `${r.maxDrift > 0 ? "+" : ""}${r.maxDrift}pp`), warnIdx: results.map(r => r.maxDrift).indexOf(Math.max(...results.map(r => r.maxDrift))) },
+                      ...pod.aes.map(ae => ({
+                        label: `${ae.name.split(" ")[0]} — assigned`,
+                        vals: results.map(r => {
+                          const s = r.aeSummary.find(a => a.id === ae.id);
+                          return `${s.assigned} (${s.drift > 0 ? "+" : ""}${s.drift}pp)`;
+                        }),
+                        warnIdx: results.map(r => r.aeSummary.find(a => a.id === ae.id).drift).indexOf(
+                          Math.max(...results.map(r => r.aeSummary.find(a => a.id === ae.id).drift))
+                        ),
+                      })),
+                    ].map((row, ri) => (
+                      <tr key={ri}>
+                        <td style={{ padding: "10px 16px", color: C.muted, borderBottom: `1px solid ${C.border}` }}>{row.label}</td>
+                        {row.vals.map((v, i) => (
+                          <td key={i} style={{ padding: "10px 16px", textAlign: "center", fontWeight: 700,
+                            color: i === row.warnIdx ? C.warn : SM[i].color, borderBottom: `1px solid ${C.border}` }}>
+                            {v}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: 12 }}>
+              {[
+                {
+                  title: "⟳ S1 — Rotation Only Risk",
+                  color: "#4f8ef7",
+                  body: `Your weighted targets (e.g., Brian 19% vs Cameron/Chase 40.5% each) mean low-weight AEs get fewer leads regardless of calendar. Call-ins still queue behind rotation — customers wait longer even if an AE has open slots right now.`
+                },
+                {
+                  title: "⚡ S2 — Availability Only Risk",
+                  color: "#f7a24f",
+                  body: `AEs with more open calendar slots accumulate leads far beyond their target weight. In your Pod Red example, if Chase keeps a clear calendar, he can absorb double his 40.5% share — taking leads that should go to Cameron.`
+                },
+                {
+                  title: "⚖ S3 — Hybrid (Your Reality)",
+                  color: "#5ef7a2",
+                  body: `This mirrors what you actually do: web leads follow rotation, BDR call-ins skip to soonest slot. The overload guard (≤40% above target share) prevents any one AE from hoarding. The residual risk: heavy call-in volume erodes rotation equity over time.`
+                },
+              ].map((c, i) => (
+                <div key={i} style={{ background: `${c.color}08`, border: `1px solid ${c.color}25`, borderRadius: 10, padding: 16 }}>
+                  <div style={{ color: c.color, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{c.title}</div>
+                  <div style={{ color: C.muted, fontSize: 12, lineHeight: 1.65 }}>{c.body}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ color: C.muted, fontSize: 11, marginTop: 18, textAlign: "center", fontFamily: "'DM Mono', monospace" }}>
+              Simulated calendar availability · Real AE names/targets from Lead_Allocation_4_0 · SLA = meet within 4h of customer preferred time
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
