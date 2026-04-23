@@ -44,22 +44,15 @@ const PODS = {
   },
 };
 
-// Generate AE calendar: 15-min slots, 06:00–17:00, 5 days
-// Mirrors the Scheduler sheet logic (time as decimal fraction of day)
-function generateCalendar(aes, seed = 7) {
-  let s = seed;
-  const rand = () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
-  // Slots: 44 per day (06:00–17:00 in 15-min increments)
-  return aes.reduce((acc, ae) => {
+function generateCalendar(aes, availabilities) {
+  return aes.reduce((acc, ae, idx) => {
+    let s = (idx + 1) * 999983;
+    const rand = () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
+    const avail = (availabilities[ae.id] ?? 70) / 100;
     const slots = [];
     for (let day = 0; day < 5; day++) {
-      for (let slot = 0; slot < 44; slot++) { // 06:00 = slot 0, 17:00 = slot 44
-        const hour = 6 + slot * 0.25;
-        // Simulate realistic "Busy" pattern — more busy mid-morning and around lunch
-        const busyChance = (hour >= 9 && hour <= 11.75) || (hour >= 13 && hour <= 14.75) ? 0.55 : 0.3;
-        if (rand() > busyChance) {
-          slots.push({ day, slot, hour: 6 + slot * 0.25 });
-        }
+      for (let slot = 0; slot < 44; slot++) {
+        if (rand() < avail) slots.push({ day, slot, hour: 6 + slot * 0.25 });
       }
     }
     acc[ae.id] = slots;
@@ -67,21 +60,20 @@ function generateCalendar(aes, seed = 7) {
   }, {});
 }
 
-// Generate leads for a pod
-function generateLeads(pod, n, callInRate, seed = 42) {
+function generateLeads(pod, n, availRoutingRate, seed = 42) {
   let s = seed;
   const rand = () => { s = (s * 1664525 + 1013904223) & 0xffffffff; return (s >>> 0) / 0xffffffff; };
   return Array.from({ length: n }, (_, i) => {
     const day = Math.floor(rand() * 5);
     const arrivalHour = 8 + rand() * 8;
     const custPrefHour = arrivalHour + rand() * 4 + 0.5;
-    const isCallIn = rand() < callInRate;
+    const availRouted = rand() < availRoutingRate;
     return {
       id: i + 1,
       day,
       arrivalHour,
       custPrefHour: Math.min(custPrefHour, 17),
-      isCallIn,
+      availRouted,
       industry: pod.industries[Math.floor(rand() * pod.industries.length)],
       type: pod.types[Math.floor(rand() * pod.types.length)],
     };
@@ -141,16 +133,10 @@ function runScenario(scenario, leads, aes, calendar) {
       if (chosen) chosen.assigned++;
 
     } else if (scenario === 3) {
-      // ── S3: HYBRID — rotation for web leads, availability for call-ins ─
-      // This mirrors your actual described intent:
-      //   - Regular leads → weighted rotation (who's up next)
-      //   - Call-in leads → soonest available slot (BDR override)
-      // But we add a guardrail: if soonest-slot AE is already 40% above target share, revert to rotation
       const targetShare = aes.reduce((acc, ae) => { acc[ae.id] = ae.target / totalTargets; return acc; }, {});
       const totalAssigned = state.reduce((s, ae) => s + ae.assigned, 0) || 1;
 
-      if (lead.isCallIn) {
-        // Call-in: find soonest slot, but check overload guard
+      if (lead.availRouted) {
         let best = Infinity;
         for (const ae of state) {
           const s = soonestSlot(ae, lead.day, lead.custPrefHour);
@@ -159,7 +145,6 @@ function runScenario(scenario, leads, aes, calendar) {
           const overloaded = currentShare > targetShare[ae.id] * 1.4; // 40% above target = guard
           if (!overloaded && dayHour < best) { best = dayHour; chosen = ae; meetSlot = s; }
         }
-        // If all are overloaded, relax guard
         if (!chosen) {
           for (const ae of state) {
             const s = soonestSlot(ae, lead.day, lead.custPrefHour);
@@ -168,7 +153,6 @@ function runScenario(scenario, leads, aes, calendar) {
           }
         }
       } else {
-        // Web lead: pure rotation
         const sorted = [...state].sort((a, b) => b.points - a.points);
         chosen = sorted[0];
         meetSlot = soonestSlot(chosen, lead.day, lead.custPrefHour)
@@ -192,7 +176,7 @@ function runScenario(scenario, leads, aes, calendar) {
       meetHour: meetSlot.hour,
       waitHours: +waitHours.toFixed(2),
       overSla,
-      isCallIn: lead.isCallIn,
+      availRouted: lead.availRouted,
       industry: lead.industry,
     };
   }).filter(Boolean);
@@ -210,7 +194,7 @@ function runScenario(scenario, leads, aes, calendar) {
   });
 
   const maxDrift = Math.max(...aeSummary.map(a => a.drift));
-  const availabilityOverrideCount = scenario === 1 ? 0 : scenario === 2 ? assignments.length : assignments.filter(a => a.isCallIn).length;
+  const availabilityOverrideCount = scenario === 1 ? 0 : scenario === 2 ? assignments.length : assignments.filter(a => a.availRouted).length;
   const availabilityOverridePct = assignments.length ? +((availabilityOverrideCount / assignments.length) * 100).toFixed(1) : 0;
 
   return { assignments, aeSummary, maxDrift, availabilityOverrideCount, availabilityOverridePct };
@@ -224,9 +208,9 @@ const C = {
 };
 
 const SM = [
-  { label: "S1", title: "Rotation First",   sub: "Weighted targets drive all assignments — call-ins too", color: "#4f8ef7", icon: "⟳" },
-  { label: "S2", title: "Customer First",   sub: "Soonest open slot wins every time, no rotation",        color: "#f7a24f", icon: "⚡" },
-  { label: "S3", title: "Hybrid (Actual)",  sub: "Web leads → rotation · Call-ins → soonest slot + overload guard", color: "#5ef7a2", icon: "⚖" },
+  { label: "S1", title: "Rotation First",  sub: "Weighted targets drive all assignments — no availability routing", color: "#4f8ef7", icon: "⟳" },
+  { label: "S2", title: "Availability First", sub: "Soonest open slot wins every time, no rotation",              color: "#f7a24f", icon: "⚡" },
+  { label: "S3", title: "Hybrid (Actual)", sub: "Rotation for most leads · configurable % routed by availability + overload guard", color: "#5ef7a2", icon: "⚖" },
 ];
 
 const fmt = (h) => {
@@ -239,16 +223,21 @@ export default function App() {
   const [activePod, setActivePod] = useState("Pod Red");
   const [leadCount, setLeadCount] = useState(30);
   const [activeScenario, setActiveScenario] = useState(2);
-  const [callInRate, setCallInRate] = useState(30);
+  const [availRoutingPct, setAvailRoutingPct] = useState(30);
+  const [aeAvailability, setAeAvailability] = useState(() => {
+    const init = {};
+    Object.values(PODS).forEach(p => p.aes.forEach(ae => { init[ae.id] = 70; }));
+    return init;
+  });
 
   const pod = PODS[activePod];
 
   const { leads, calendar, results } = useMemo(() => {
-    const leads = generateLeads(pod, leadCount, callInRate / 100, activePod.length * 13);
-    const calendar = generateCalendar(pod.aes, activePod.length * 7);
+    const leads = generateLeads(pod, leadCount, availRoutingPct / 100, activePod.length * 13);
+    const calendar = generateCalendar(pod.aes, aeAvailability);
     const results = [1, 2, 3].map(s => runScenario(s, leads, pod.aes, calendar));
     return { leads, calendar, results };
-  }, [activePod, leadCount, callInRate]);
+  }, [activePod, leadCount, availRoutingPct, aeAvailability]);
 
   const r = results[activeScenario];
   const sm = SM[activeScenario];
@@ -273,7 +262,7 @@ export default function App() {
           </div>
           <h1 style={{ fontSize: 28, fontWeight: 800, margin: "0 0 4px", letterSpacing: "-0.02em" }}>Allocation Risk Explorer</h1>
           <p style={{ color: C.muted, fontSize: 14, margin: 0 }}>
-            Based on your actual pod/target structure · {leads.filter(l => l.isCallIn).length} of {leadCount} leads are call-ins ({callInRate}%)
+            Based on your actual pod/target structure · {leads.filter(l => l.availRouted).length} of {leadCount} leads routed by availability ({availRoutingPct}%)
           </p>
         </div>
 
@@ -308,12 +297,28 @@ export default function App() {
               <span style={{ color: pod.color, fontWeight: 800, fontSize: 18, minWidth: 28, fontFamily: "'DM Mono', monospace" }}>{leadCount}</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ color: C.muted, fontSize: 12 }}>CALL-IN RATE</span>
-              <input type="range" min={0} max={100} step={5} value={callInRate}
-                onChange={e => setCallInRate(+e.target.value)}
+              <span style={{ color: C.muted, fontSize: 12 }}>AVAIL. ROUTING</span>
+              <input type="range" min={0} max={100} step={5} value={availRoutingPct}
+                onChange={e => setAvailRoutingPct(+e.target.value)}
                 style={{ width: 100, accentColor: pod.color }} />
-              <span style={{ color: pod.color, fontWeight: 800, fontSize: 18, minWidth: 36, fontFamily: "'DM Mono', monospace" }}>{callInRate}%</span>
+              <span style={{ color: pod.color, fontWeight: 800, fontSize: 18, minWidth: 36, fontFamily: "'DM Mono', monospace" }}>{availRoutingPct}%</span>
             </div>
+          </div>
+        </div>
+
+        {/* AE calendar availability */}
+        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 18px", marginBottom: 20 }}>
+          <div style={{ color: C.muted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginBottom: 12 }}>AE CALENDAR AVAILABILITY</div>
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+            {pod.aes.map(ae => (
+              <div key={ae.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, minWidth: 58 }}>{ae.name.split(" ")[0]}</span>
+                <input type="range" min={10} max={100} step={5} value={aeAvailability[ae.id] ?? 70}
+                  onChange={e => setAeAvailability(prev => ({ ...prev, [ae.id]: +e.target.value }))}
+                  style={{ width: 90, accentColor: pod.color }} />
+                <span style={{ color: pod.color, fontWeight: 700, fontSize: 14, minWidth: 36, fontFamily: "'DM Mono', monospace" }}>{aeAvailability[ae.id] ?? 70}%</span>
+              </div>
+            ))}
           </div>
         </div>
 
