@@ -198,14 +198,11 @@
         return { ...ae, assigned: mine.length, expectedShare, actualShare, drift, avgWait, slaBreaches };
       });
 
-      const avgWait = assignments.length ? +(assignments.reduce((s, a) => s + a.waitHours, 0) / assignments.length).toFixed(1) : 0;
-      const slaBreachRate = assignments.length ? +((assignments.filter(a => a.overSla).length / assignments.length) * 100).toFixed(1) : 0;
       const maxDrift = Math.max(...aeSummary.map(a => a.drift));
-      const callInWait = assignments.filter(a => a.isCallIn).length
-        ? +(assignments.filter(a => a.isCallIn).reduce((s, a) => s + a.waitHours, 0) / assignments.filter(a => a.isCallIn).length).toFixed(1)
-        : 0;
+      const availabilityOverrideCount = scenario === 1 ? 0 : scenario === 2 ? assignments.length : assignments.filter(a => a.isCallIn).length;
+      const availabilityOverridePct = assignments.length ? +((availabilityOverrideCount / assignments.length) * 100).toFixed(1) : 0;
 
-      return { assignments, aeSummary, avgWait, slaBreachRate, maxDrift, callInWait };
+      return { assignments, aeSummary, maxDrift, availabilityOverrideCount, availabilityOverridePct };
     }
 
     const C = {
@@ -300,8 +297,8 @@
             </div>
 
             <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-              <Chip label="Avg Customer Wait" value={`${r.avgWait}h`} warn={r.avgWait > 3} good={r.avgWait <= 1.5} />
-              <Chip label="SLA Breaches (>4h)" value={`${r.slaBreachRate}%`} warn={r.slaBreachRate > 20} good={r.slaBreachRate === 0} />
+              <Chip label="Availability Overrides" value={`${r.availabilityOverridePct}%`} warn={r.availabilityOverridePct > 40} good={r.availabilityOverridePct === 0} />
+              <Chip label="Leads Routed by Availability" value={`${r.availabilityOverrideCount} of ${r.assignments.length}`} />
               <Chip label="Max AE Drift from Target" value={`${r.maxDrift > 0 ? "+" : ""}${r.maxDrift}pp`} warn={r.maxDrift > 15} good={Math.abs(r.maxDrift) <= 5} />
             </div>
 
@@ -354,8 +351,8 @@
                   </thead>
                   <tbody>
                     {[
-                      { label: "Avg Customer Wait", vals: results.map(r => `${r.avgWait}h`), warnIdx: results.map(r => r.avgWait).indexOf(Math.max(...results.map(r => r.avgWait))) },
-                      { label: "SLA Breach Rate", vals: results.map(r => `${r.slaBreachRate}%`), warnIdx: results.map(r => r.slaBreachRate).indexOf(Math.max(...results.map(r => r.slaBreachRate))) },
+                      { label: "Availability Overrides", vals: results.map(r => `${r.availabilityOverridePct}%`), warnIdx: results.map(r => r.availabilityOverridePct).indexOf(Math.max(...results.map(r => r.availabilityOverridePct))) },
+                      { label: "Leads Routed by Availability", vals: results.map(r => `${r.availabilityOverrideCount} of ${r.assignments.length}`), warnIdx: results.map(r => r.availabilityOverrideCount).indexOf(Math.max(...results.map(r => r.availabilityOverrideCount))) },
                       { label: "Max AE Drift from Target", vals: results.map(r => `${r.maxDrift > 0 ? "+" : ""}${r.maxDrift}pp`), warnIdx: results.map(r => r.maxDrift).indexOf(Math.max(...results.map(r => r.maxDrift))) },
                       ...pod.aes.map(ae => ({
                         label: `${ae.name.split(" ")[0]} — assigned`,
